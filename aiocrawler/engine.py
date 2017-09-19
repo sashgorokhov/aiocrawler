@@ -4,7 +4,7 @@ import inspect
 
 class Engine:
     """
-    :param list[aiospider.spider.Spider] spiders:
+    :param list[aiocrawler.spider.Spider] spiders:
     """
 
     def __init__(self, loop=None):
@@ -22,7 +22,7 @@ class Engine:
 
     async def run_spider(self, spider):
         """
-        :param aiospider.spider.Spider spider:
+        :param aiocrawler.spider.Spider spider:
         """
 
         async with spider:
@@ -43,6 +43,6 @@ class Engine:
     def add_spider(self, spider):
         """
 
-        :param aiospider.spider.Spider spider:
+        :param aiocrawler.spider.Spider spider:
         """
         self.spiders.append(spider)

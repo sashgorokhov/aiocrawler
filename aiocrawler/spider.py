@@ -1,10 +1,10 @@
-from aiospider import downloader
+from aiocrawler import downloader
 
 
 class Spider:
     def __init__(self, engine):
         """
-        :param aiospider.engine.Engine engine:
+        :param aiocrawler.engine.Engine engine:
         """
         self.engine = engine
         self.downloader = downloader.Downloader(self)

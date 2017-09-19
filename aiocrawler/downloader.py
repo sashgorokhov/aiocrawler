@@ -1,6 +1,6 @@
 import asyncio
 
-from aiospider.http import Session
+from aiocrawler.http import Session
 
 
 class Downloader:
@@ -10,7 +10,7 @@ class Downloader:
     def __init__(self, spider, queue=None, session=None):
         """
 
-        :param aiospider.spider.Spider spider:
+        :param aiocrawler.spider.Spider spider:
         :param asyncio.Queue queue:
         :param Session session:
         """
@@ -21,7 +21,7 @@ class Downloader:
     async def enqueue(self, request):
         """
 
-        :param aiospider.request.Request request:
+        :param aiocrawler.request.Request request:
         """
         await self.queue.put(request)
 
@@ -31,13 +31,13 @@ class Downloader:
     async def process_request(self, request):
         """
 
-        :param aiospider.http.RequestWrapper request:
+        :param aiocrawler.http.RequestWrapper request:
         """
         return await self.session.execute_request(request)
 
     async def process_response(self, response):
         """
-        :param aiospider.http.Response response:
+        :param aiocrawler.http.Response response:
         """
         return response
 
