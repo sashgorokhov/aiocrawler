@@ -1,5 +1,9 @@
 import asyncio
 import inspect
+import logging
+
+from aiocrawler.downloader import DownloadManager
+from aiocrawler.spider import _SpiderOpenClose
 
 
 class Engine:
@@ -13,32 +17,36 @@ class Engine:
         :param asyncio.base_events.BaseEventLoop loop:
         """
         self.loop = loop or asyncio.get_event_loop()
+        self.download_manager = DownloadManager(self)
         self.spiders = list()
 
+    @property
+    def logger(self):
+        return logging.getLogger('engine')
+
     def start(self):
-        self.loop.run_until_complete(asyncio.wait(
-            map(self.run_spider, self.spiders)
-        ))
+        self.loop.create_task(self.download_manager.download_loop())
+        for spider in self.spiders:
+            self.loop.create_task(self.run_spider(spider))
+        self.loop.run_forever()
 
     async def run_spider(self, spider):
         """
         :param aiocrawler.spider.Spider spider:
         """
+        self.logger.info('Running spider %s', spider.get_name())
+        async with _SpiderOpenClose(spider):
+            await spider.start()
 
-        async with spider:
-            async for response in spider.downloader.loop():
-                await self.process_response(spider, response)
+    async def add_request(self, spider, request):
+        await self.download_manager.enqueue(spider, request)
 
     async def process_response(self, spider, response):
         callback = response.callback or getattr(spider, 'process_response', None)
-
         if not callback:
             return
-
-        if inspect.isfunction(callback):
-            return callback(response)
-        elif inspect.iscoroutinefunction(callback):
-            return await callback(response)
+        if inspect.iscoroutinefunction(callback):
+            self.loop.create_task(callback(response))
 
     def add_spider(self, spider):
         """

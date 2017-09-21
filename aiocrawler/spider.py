@@ -1,26 +1,40 @@
-from aiocrawler import downloader
+class _SpiderOpenClose:
+    def __init__(self, spider):
+        """
+        :param Spider spider:
+        """
+        self.spider = spider
+
+    async def __aenter__(self):
+        await self.spider.open()
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.spider.close()
 
 
 class Spider:
+    name = None
+
     def __init__(self, engine):
         """
         :param aiocrawler.engine.Engine engine:
         """
         self.engine = engine
-        self.downloader = downloader.Downloader(self)
 
-    async def __aenter__(self):
-        await self.start()
-        return self
+    def get_name(self):
+        return self.name or self.__class__.__name__
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.close()
-
-    async def start(self):
-        pass
-
-    async def process_response(self, response):
+    async def open(self):
         pass
 
     async def close(self):
-        self.downloader.stop = True
+        pass
+
+    async def start(self):
+        raise NotImplementedError()
+
+    async def process_response(self, response):
+        raise NotImplementedError()
+
+    async def add_request(self, request):
+        await self.engine.add_request(self, request)

@@ -5,12 +5,13 @@ from aiohttp import client_reqrep
 class RequestWrapper:
     meta = None
 
-    def __init__(self, url, method='GET', callback=None, meta=None, **kwargs):
+    def __init__(self, url, method='GET', callback=None, meta=None, priority=0, **kwargs):
         self.url = url
         self.method = method
         self.callback = callback
         self.kwargs = kwargs
         self.meta = meta or dict()
+        self.priority = priority
 
 
 class Response(client_reqrep.ClientResponse):
