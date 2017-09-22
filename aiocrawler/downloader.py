@@ -1,6 +1,8 @@
 import asyncio
 import logging
 
+import aiohttp
+
 from aiocrawler.http import Session
 
 
@@ -43,7 +45,7 @@ class DownloadManager:
         return logging.getLogger('download_manager')
 
     def create_session(self, spider):
-        return Session()
+        return Session(connector=aiohttp.TCPConnector(verify_ssl=False))
 
     def get_session(self, spider):
         if spider not in self.spider_sessions:
@@ -52,7 +54,7 @@ class DownloadManager:
 
     async def enqueue(self, spider, request):
         """
-        :param aiocrawler.http.RequestWrapper request:
+        :param aiocrawler.http.Request request:
         """
         self.logger.info('Enqueued request from %s %s %s', spider.get_name(), request.method, request.url)
         await self.queue.put((spider, request))
@@ -63,7 +65,7 @@ class DownloadManager:
     async def process_request(self, spider, request):
         """
 
-        :param aiocrawler.http.RequestWrapper request:
+        :param aiocrawler.http.Request request:
         """
         session = self.get_session(spider)
         self.logger.info('Processing request %s %s %s', spider.get_name(), request.method, request.url)

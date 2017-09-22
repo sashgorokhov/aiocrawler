@@ -2,7 +2,7 @@ import aiohttp
 from aiohttp import client_reqrep
 
 
-class RequestWrapper:
+class Request:
     meta = None
 
     def __init__(self, url, method='GET', callback=None, meta=None, priority=0, **kwargs):
@@ -29,7 +29,7 @@ class Session(aiohttp.ClientSession):
     async def execute_request(self, request):
         """
 
-        :param RequestWrapper request:
+        :param Request request:
         :return: Response
         """
         async with self.request(request.method, request.url, **request.kwargs) as response:
