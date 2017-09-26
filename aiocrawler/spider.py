@@ -1,40 +1,40 @@
-class _SpiderOpenClose:
-    def __init__(self, spider):
-        """
-        :param Spider spider:
-        """
-        self.spider = spider
-
-    async def __aenter__(self):
-        await self.spider.open()
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.spider.close()
+from aiocrawler.http import Request
 
 
 class Spider:
+    """
+    :param aiocrawler.engine.Engine engine:
+    """
     name = None
 
     def __init__(self, engine):
-        """
-        :param aiocrawler.engine.Engine engine:
-        """
         self.engine = engine
 
     def get_name(self):
         return self.name or self.__class__.__name__
 
-    async def open(self):
-        pass
+    async def add_request(self, request):
+        await self.engine.add_request(self, request)
 
-    async def close(self):
-        pass
+    async def get(self, url, callback=None, meta=None, **kwargs):
+        request = Request(url=url, method='GET', callback=callback, meta=meta, **kwargs)
+        return await self.add_request(request)
+
+    async def post(self, url, callback=None, meta=None, **kwargs):
+        request = Request(url=url, method='POST', callback=callback, meta=meta, **kwargs)
+        return await self.add_request(request)
 
     async def start(self):
         raise NotImplementedError()
 
     async def process_response(self, response):
+        """
+        :param aiocrawler.http.Response response:
+        """
         raise NotImplementedError()
 
-    async def add_request(self, request):
-        await self.engine.add_request(self, request)
+    def __str__(self):
+        return self.name
+
+    def __repr__(self):
+        return '<Spider "%s">' % self.get_name()

@@ -36,4 +36,5 @@ class Session(aiohttp.ClientSession):
             response.request = request
             response.meta = request.meta.copy()
             response.callback = request.callback
+            await response.text()
             return response
