@@ -34,7 +34,7 @@ class Spider:
         raise NotImplementedError()
 
     def __str__(self):
-        return self.name
+        return self.get_name()
 
     def __repr__(self):
         return '<Spider "%s">' % self.get_name()

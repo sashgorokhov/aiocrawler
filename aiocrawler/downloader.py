@@ -1,7 +1,5 @@
 import asyncio
 import logging
-import operator
-import time
 
 from aiocrawler.http import Session
 from aiocrawler.utils.leaky_bucket import AsyncLeakyBucket
@@ -12,12 +10,15 @@ class Downloader:
     :param asyncio.base_events.BaseEventLoop loop:
     :param aiocrawler.engine.Engine engine:
     """
+    is_shutdown = False
+    _scheduled = 0
+    _completed = 0
 
     def __init__(self, engine):
         self.engine = engine
-        self.loop = asyncio.new_event_loop()
+        self.loop = engine.loop
         self._queue = asyncio.Queue(loop=self.loop)
-        self._bucket = AsyncLeakyBucket(5, 1)
+        self._bucket = AsyncLeakyBucket(3, 1)
         self._spider_sessions = dict()
 
     @property
@@ -32,28 +33,22 @@ class Downloader:
             self._spider_sessions[spider] = self.create_session(spider)
         return self._spider_sessions[spider]
 
-    def _run_download_loop(self):
-        self.loop.create_task(self._download_loop())
-
     async def _download_loop(self):
-        while not self._queue.empty():
-            async with self._bucket:
-                spider, request = await self._queue.get()
-                self.loop.create_task(self.process_request(spider, request))
-        self.loop.call_later(0.5, self._run_download_loop)
+        while not self.is_shutdown:
+            while not self._queue.empty():
+                async with self._bucket:
+                    with (await self.engine._shutdown_lock):
+                        spider, request = await self._queue.get()
+                        future = self.loop.create_task(self.process_request(spider, request))
+                        self.engine._futures.append(future)
+                        self._scheduled += 1
+            await asyncio.sleep(1)
 
     async def start_downloader(self):
-        self.loop.create_task(self._download_loop())
+        await self._download_loop()
 
     async def stop_downloader(self):
         pass
-
-    def start(self):
-        self.loop.create_task(self.start_downloader())
-        self.loop.run_forever()
-
-    def _add_request(self, spider, request):
-        self.loop.create_task(self.add_request(spider, request))
 
     async def add_request(self, spider, request):
         """
@@ -67,6 +62,8 @@ class Downloader:
         :param aiocrawler.spider.Spider spider:
         :param aiocrawler.http.Request request:
         """
+        self.logger.info('Currently processing: %s', self._scheduled - self._completed)
+
         session = self.get_session(spider)
         response = await session.execute_request(request)
         await self.process_response(spider, response)
@@ -76,16 +73,20 @@ class Downloader:
         :param aiocrawler.spider.Spider spider:
         :param aiocrawler.http.Response response:
         """
-        self.engine.loop.call_soon_threadsafe(self.engine._process_response, spider, response)
+        try:
+            await self.engine.process_response(spider, response)
+        finally:
+            self._completed += 1
 
     def shutdown(self):
+        if self.is_shutdown:
+            return
+        self.logger.info('Shutting down')
+        self.is_shutdown = True
+
         for session in self._spider_sessions.values():
-            session.close()
+            if not session.closed:
+                session.close()
 
-        list(map(operator.methodcaller('cancel'), asyncio.Task.all_tasks(loop=self.loop)))
-
-        while asyncio.Task.all_tasks(loop=self.loop):
-            time.sleep(1)
-            list(map(operator.methodcaller('cancel'), asyncio.Task.all_tasks(loop=self.loop)))
-
-        self.loop.stop()
+                # if self.loop.is_running():
+                #    self.loop.stop()
