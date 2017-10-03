@@ -1,5 +1,6 @@
 import asyncio
 import collections
+import functools
 import inspect
 import logging
 import signal
@@ -14,6 +15,10 @@ class Engine:
     :param bool is_shutdown: Indicates that engine has stopped
     :param int global_concurrent_requests_limit: Limit engine-wide concurrent requests
     :param list[Spider] spiders: List of spiders
+
+
+    :param dict[aiocrawler.spider.Spider, aiocrawler.http.Session] _spider_sessions:
+    :param dict[aiocrawler.spider.Spider, asyncio.Queue] _spider_queues:
     """
     is_shutdown = False
     global_concurrent_requests_limit = 100
@@ -23,22 +28,20 @@ class Engine:
         :param asyncio.base_events.BaseEventLoop loop: custom event loop to work in
         """
         self.spiders = []
-        self._watched_futures = collections.defaultdict(list)
 
         self.loop = loop or asyncio.get_event_loop()
         self.loop.set_exception_handler(self._engine_exception_handler)
         self.loop.add_signal_handler(signal.SIGHUP, self.shutdown)
         self.loop.add_signal_handler(signal.SIGTERM, self.shutdown)
 
-        self._queue = asyncio.Queue(loop=self.loop)
+        self._watched_futures = collections.defaultdict(list)
+
         self._requests_semaphore = asyncio.Semaphore(self.global_concurrent_requests_limit)
         self._spider_sessions = dict()
+        self._spider_state = dict()
+        self._spider_queues = collections.defaultdict(functools.partial(asyncio.Queue, loop=self.loop))
 
         self._shutdown_lock = asyncio.Lock(loop=self.loop)
-
-        self._spider_state = collections.defaultdict(lambda: {
-            'close_lock': asyncio.Lock(loop=self.loop),
-        })
 
     async def add_request(self, spider, request):
         """
@@ -48,7 +51,7 @@ class Engine:
         :param aiocrawler.http.Request request: Request to execute
         """
         self.logger.debug('Enqueued request from spider "%s": %s %s', spider, request.method, request.url)
-        await self._queue.put((spider, request))
+        await self._spider_queues[spider].put(request)
         return request
 
     def start(self):
@@ -90,16 +93,22 @@ class Engine:
 
     async def _download_loop(self):
         while not self.is_shutdown:
-            while not self._queue.empty():
-                with (await self._shutdown_lock):
-                    try:
-                        await self._requests_semaphore.acquire()
-                        spider, request = await self._queue.get()
-                        task = self.loop.create_task(self.process_request(spider, request))
-                        self.watch_future(spider, task)
-                    except:
-                        self._requests_semaphore.release()
-            await asyncio.sleep(1)
+            for spider, queue in self._spider_queues.items():
+                if queue.empty() or self._spider_state[spider]['requests_semaphore'].locked():
+                    continue
+
+                try:
+                    await self._requests_semaphore.acquire()
+                    await self._spider_state[spider]['requests_semaphore'].acquire()
+
+                    request = await queue.get()
+                    task = self.loop.create_task(self.process_request(spider, request))
+                    self.watch_future(spider, task)
+                except:
+                    self._spider_state[spider]['requests_semaphore'].release()
+                    self._requests_semaphore.release()
+
+            await asyncio.sleep(0.1)
 
     async def process_request(self, spider, request):
         """
@@ -121,6 +130,7 @@ class Engine:
             self.logger.exception('Error while processing request from spider "%s": %s %s',
                                   spider, request.method, request.url)
         finally:
+            self._spider_state[spider]['requests_semaphore'].release()
             self._requests_semaphore.release()
 
     async def process_response(self, spider, response):
@@ -159,6 +169,10 @@ class Engine:
         :param aiocrawler.spider.Spider spider:
         """
         self.logger.info('Starting spider "%s"', spider)
+        self._spider_state[spider] = {
+            'close_lock': asyncio.Lock(loop=self.loop),
+            'requests_semaphore': asyncio.Semaphore(spider.concurrent_requests_limit, loop=self.loop)
+        }
         try:
             await spider.start()
         except:
@@ -172,7 +186,7 @@ class Engine:
         :rtype: bool
         """
         pending_futures = self._clear_watched_futures(spider)
-        return not len(pending_futures) and self._queue.empty()
+        return not len(pending_futures) and self._spider_queues[spider].empty()
 
     async def _attempt_close_spider(self, spider):
         """

@@ -9,6 +9,7 @@ class Top100Spider(aiocrawler.Spider):
     name = 'top100'
     filename = 'top100.txt'
     start_time = None
+    concurrent_requests_limit = 100
 
     @asyncio.coroutine
     def get_urls_list(self):

@@ -12,6 +12,7 @@ class Spider:
     closed = False
     _session = None
     _logger = None
+    concurrent_requests_limit = 20
 
     def __init__(self, engine):
         self.engine = engine

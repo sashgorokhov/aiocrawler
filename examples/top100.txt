@@ -1,7 +1,6 @@
 google.com
 youtube.com
 facebook.com
-baidu.com
 wikipedia.org
 yahoo.com
 google.co.in
@@ -25,7 +24,6 @@ google.co.uk
 google.com.br
 google.fr
 google.ru
-linkedin.com
 list.tmall.com
 google.com.hk
 yandex.ru
@@ -82,7 +80,6 @@ adobe.com
 google.com.ar
 amazon.in
 coccoc.com
-googleusercontent.com
 dropbox.com
 amazon.de
 diply.com
