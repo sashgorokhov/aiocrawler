@@ -6,6 +6,7 @@ class Spider:
     :param aiocrawler.engine.Engine engine:
     """
     name = None
+    closed = False
 
     def __init__(self, engine):
         self.engine = engine
@@ -14,6 +15,10 @@ class Spider:
         return self.name or self.__class__.__name__
 
     async def add_request(self, request):
+        """
+
+        :param aiocrawler.http.Request request:
+        """
         await self.engine.add_request(self, request)
 
     async def get(self, url, callback=None, meta=None, **kwargs):
@@ -26,6 +31,9 @@ class Spider:
 
     async def start(self):
         raise NotImplementedError()
+
+    def close_spider(self):
+        pass
 
     async def process_response(self, response):
         """
