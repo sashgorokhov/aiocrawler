@@ -37,7 +37,7 @@ class Engine:
         self._shutdown_lock = asyncio.Lock(loop=self.loop)
 
         self._spider_state = collections.defaultdict(lambda: {
-            'lock': asyncio.Lock(loop=self.loop),
+            'close_lock': asyncio.Lock(loop=self.loop),
         })
 
     async def add_request(self, spider, request):
@@ -71,22 +71,22 @@ class Engine:
             if not self.loop.is_closed():
                 self.loop.close()
 
-    def watch_future(self, spider, fututre):
+    def watch_future(self, spider, future):
         """
         Add future to track its progress. Spider wont be closed until all futures
         for that spider will complete.
 
         :param aiocrawler.spider.Spider spider:
-        :param asyncio.Future|asyncio.Task fututre:
+        :param asyncio.Future|asyncio.Task future:
         :return:
         """
-        fututre.add_done_callback(
+        future.add_done_callback(
             lambda future:
             self.loop.create_task(
                 self._attempt_close_spider(spider)
             )
         )
-        self._watched_futures[spider].append(fututre)
+        self._watched_futures[spider].append(future)
 
     async def _download_loop(self):
         while not self.is_shutdown:
@@ -182,7 +182,7 @@ class Engine:
         :param aiocrawler.spider.Spider spider:
         """
         with (await self._shutdown_lock):
-            with (await self._spider_state[spider]['lock']):
+            with (await self._spider_state[spider]['close_lock']):
                 if self._is_spider_finished(spider):
                     self.close_spider(spider)
                 if all(spider.closed for spider in self.spiders):
