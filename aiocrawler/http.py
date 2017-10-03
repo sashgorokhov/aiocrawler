@@ -28,19 +28,4 @@ class Session(aiohttp.ClientSession):
     # noinspection PyArgumentList
     def __init__(self, **kwargs):
         kwargs.setdefault('response_class', Response)
-        kwargs.setdefault('connector', aiohttp.TCPConnector(verify_ssl=False))
         super(Session, self).__init__(**kwargs)
-
-    async def execute_request(self, request):
-        """
-
-        :param Request request:
-        :return: Response
-        """
-        request.kwargs.setdefault('timeout', 30)
-        async with self.request(request.method, request.url, **request.kwargs) as response:
-            response.request = request
-            response.meta = request.meta.copy()
-            response.callback = request.callback
-            await response.text()
-            return response

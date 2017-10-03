@@ -6,21 +6,26 @@ import signal
 from concurrent.futures import CancelledError
 
 from aiocrawler import http
-from aiocrawler.spider import Spider
 
 
 class Engine:
     """
+    Runs event loop, schedules spiders and coordinates their work.
+
     :param asyncio.base_events.BaseEventLoop loop:
+    :param bool is_shutdown: Indicates that engine has stopped
+    :param int global_concurrent_requests_limit: Limit engine-wide concurrent requests
+    :param list[Spider] spiders: List of spiders
     """
     is_shutdown = False
-    _global_concurrent_requests_limit = 20
+    global_concurrent_requests_limit = 100
 
-    def __init__(self, loop=None, spiders=None):
-        if spiders and isinstance(spiders, Spider):
-            spiders = [spiders]
-        self.spiders = spiders or []
-        self._watched_futures = []
+    def __init__(self, loop=None):
+        """
+        :param asyncio.base_events.BaseEventLoop loop: custom event loop to work in
+        """
+        self.spiders = []
+        self._watched_futures = collections.defaultdict(list)
 
         self.loop = loop or asyncio.get_event_loop()
         self.loop.set_exception_handler(self._engine_exception_handler)
@@ -28,7 +33,7 @@ class Engine:
         self.loop.add_signal_handler(signal.SIGTERM, self.shutdown)
 
         self._queue = asyncio.Queue(loop=self.loop)
-        self._requests_semaphore = asyncio.Semaphore(self._global_concurrent_requests_limit)
+        self._requests_semaphore = asyncio.Semaphore(self.global_concurrent_requests_limit)
         self._spider_sessions = dict()
 
         self._shutdown_lock = asyncio.Lock(loop=self.loop)
@@ -39,15 +44,22 @@ class Engine:
 
     async def add_request(self, spider, request):
         """
-        :param aiocrawler.spider.Spider spider:
-        :param aiocrawler.http.Request request:
+        Add request to queue to process it.
+
+        :param aiocrawler.spider.Spider spider: Spider that generated that request
+        :param aiocrawler.http.Request request: Request to execute
         """
         self.logger.debug('Enqueued request from spider "%s": %s %s', spider, request.method, request.url)
         return await self._queue.put((spider, request))
 
     def start(self):
+        """
+        Runs event loop.
+        Blocks until all spiders are closed.
+        """
         for spider in self.spiders:
-            self.loop.create_task(self.start_spider(spider))
+            task = self.loop.create_task(self.start_spider(spider))
+            self.watch_future(spider, task)
         try:
             self.loop.run_until_complete(self._download_loop())
         except KeyboardInterrupt:
@@ -60,13 +72,22 @@ class Engine:
             if not self.loop.is_closed():
                 self.loop.close()
 
-    def watch_future(self, fututre):
+    def watch_future(self, spider, fututre):
         """
+        Add future to track its progress. Spider wont be closed until all futures
+        for that spider will complete.
 
+        :param aiocrawler.spider.Spider spider:
         :param asyncio.Future|asyncio.Task fututre:
         :return:
         """
-        self._watched_futures.append(fututre)
+        fututre.add_done_callback(
+            lambda future:
+            self.loop.create_task(
+                self._attempt_close_spider(spider)
+            )
+        )
+        self._watched_futures[spider].append(fututre)
 
     async def _download_loop(self):
         while not self.is_shutdown:
@@ -76,7 +97,7 @@ class Engine:
                         await self._requests_semaphore.acquire()
                         spider, request = await self._queue.get()
                         task = self.loop.create_task(self.process_request(spider, request))
-                        self.watch_future(task)
+                        self.watch_future(spider, task)
                     except:
                         self._requests_semaphore.release()
             await asyncio.sleep(1)
@@ -89,14 +110,17 @@ class Engine:
         self.logger.debug('Started processing request from spider "%s": %s %s', spider, request.method, request.url)
         try:
             session = self.get_session(spider)
-            response = await session.execute_request(request)
-            await self.process_response(spider, response)
+            request.kwargs.setdefault('timeout', 30)
+            async with session.request(request.method, request.url, **request.kwargs) as response:
+                response.request = request
+                response.meta = request.meta.copy()
+                response.callback = request.callback
+                await self.process_response(spider, response)
         except:
             self.logger.exception('Error while processing request from spider "%s": %s %s',
                                   spider, request.method, request.url)
         finally:
             self._requests_semaphore.release()
-            asyncio.ensure_future(self._attempt_close_spider(spider), loop=self.loop)
 
     async def process_response(self, spider, response):
         """
@@ -130,8 +154,6 @@ class Engine:
             await spider.start()
         except:
             self.logger.exception('Error while starting spider %s', str(spider))
-        finally:
-            asyncio.ensure_future(self._attempt_close_spider(spider), loop=self.loop)
 
     async def _attempt_close_spider(self, spider):
         """
@@ -139,8 +161,8 @@ class Engine:
         """
         with (await self._shutdown_lock):
             with (await self._spider_state[spider]['lock']):
-                self._clear_watched_futures()
-                if not len(self._watched_futures) and self._queue.empty():
+                pending_futures = self._clear_watched_futures(spider)
+                if not len(pending_futures) and self._queue.empty():
                     self.close_spider(spider)
                     if all(spider.closed for spider in self.spiders):
                         self.loop.call_soon_threadsafe(self.shutdown)
@@ -149,6 +171,8 @@ class Engine:
         """
         :param aiocrawler.spider.Spider spider:
         """
+        if spider.closed:
+            return
         self.logger.info('Closing spider "%s"', spider)
         spider.closed = True
         try:
@@ -162,6 +186,9 @@ class Engine:
         self.logger.info('Shutting down')
         self.is_shutdown = True
 
+        for spider in self.spiders:
+            self.close_spider(spider)
+
         for session in self._spider_sessions.values():
             if not session.closed:
                 session.close()
@@ -172,9 +199,9 @@ class Engine:
     def _engine_exception_handler(self, loop, context):
         self.logger.error('Uncaught exception: %s', str(context))
 
-    def _clear_watched_futures(self):
-        self._watched_futures = list(filter(lambda f: not f.done(), self._watched_futures))
-        return self._watched_futures
+    def _clear_watched_futures(self, spider):
+        self._watched_futures[spider] = list(filter(lambda f: not f.done(), self._watched_futures[spider]))
+        return self._watched_futures[spider]
 
     @property
     def logger(self):
