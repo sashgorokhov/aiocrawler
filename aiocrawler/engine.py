@@ -5,8 +5,6 @@ import logging
 import signal
 from concurrent.futures import CancelledError
 
-from aiocrawler import http
-
 
 class Engine:
     """
@@ -50,7 +48,8 @@ class Engine:
         :param aiocrawler.http.Request request: Request to execute
         """
         self.logger.debug('Enqueued request from spider "%s": %s %s', spider, request.method, request.url)
-        return await self._queue.put((spider, request))
+        await self._queue.put((spider, request))
+        return request
 
     def start(self):
         """
@@ -104,6 +103,8 @@ class Engine:
 
     async def process_request(self, spider, request):
         """
+        Executes request and spider callback
+
         :param aiocrawler.spider.Spider spider:
         :param aiocrawler.http.Request request:
         """
@@ -124,6 +125,10 @@ class Engine:
 
     async def process_response(self, spider, response):
         """
+        Processes received response by calling associated spider callback.
+        If not set, default `spider.process_response` will be used.
+        Callback is expected to be a coroutine function.
+
         :param aiocrawler.spider.Spider spider:
         :param aiocrawler.http.Response response:
         """
@@ -140,6 +145,8 @@ class Engine:
 
     def add_spider(self, spider):
         """
+        Add spider to engine's spiders list
+
         :param aiocrawler.spider.Spider spider:
         """
         if spider not in self.spiders:
@@ -147,6 +154,8 @@ class Engine:
 
     async def start_spider(self, spider):
         """
+        Start spider by calling spider's `start` method.
+
         :param aiocrawler.spider.Spider spider:
         """
         self.logger.info('Starting spider "%s"', spider)
@@ -155,20 +164,34 @@ class Engine:
         except:
             self.logger.exception('Error while starting spider %s', str(spider))
 
+    def _is_spider_finished(self, spider):
+        """
+        Determine if spider has finished its work
+
+        :param aiocrawler.spider.Spider spider:
+        :rtype: bool
+        """
+        pending_futures = self._clear_watched_futures(spider)
+        return not len(pending_futures) and self._queue.empty()
+
     async def _attempt_close_spider(self, spider):
         """
+        Close spider if it has finished all the work.
+        If all spiders have closed, schedule engine shutdown.
+
         :param aiocrawler.spider.Spider spider:
         """
         with (await self._shutdown_lock):
             with (await self._spider_state[spider]['lock']):
-                pending_futures = self._clear_watched_futures(spider)
-                if not len(pending_futures) and self._queue.empty():
+                if self._is_spider_finished(spider):
                     self.close_spider(spider)
-                    if all(spider.closed for spider in self.spiders):
-                        self.loop.call_soon_threadsafe(self.shutdown)
+                if all(spider.closed for spider in self.spiders):
+                    self.loop.call_soon_threadsafe(self.shutdown)
 
     def close_spider(self, spider):
         """
+        Close spider.
+
         :param aiocrawler.spider.Spider spider:
         """
         if spider.closed:
@@ -181,6 +204,13 @@ class Engine:
             self.logger.exception('Error while closing spider "%s"', spider)
 
     def shutdown(self):
+        """
+        Shutdown engine, cancel all pending tasks and perform some tear down actions,
+        like closing spiders and sessions.
+        Does not stops the event loop.
+
+        :return:
+        """
         if self.is_shutdown:
             return
         self.logger.info('Shutting down')
@@ -207,16 +237,10 @@ class Engine:
     def logger(self):
         return logging.getLogger('Engine')
 
-    def create_session(self, spider):
-        """
-        :param aiocrawler.spider.Spider spider:
-        """
-        return http.Session(loop=self.loop)
-
     def get_session(self, spider):
         """
+        Return a session for given spider.
+
         :param aiocrawler.spider.Spider spider:
         """
-        if spider not in self._spider_sessions:
-            self._spider_sessions[spider] = self.create_session(spider)
-        return self._spider_sessions[spider]
+        return spider.session

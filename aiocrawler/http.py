@@ -1,6 +1,7 @@
 import inspect
 
 import aiohttp
+import parsel
 from aiohttp import client_reqrep
 
 
@@ -22,6 +23,9 @@ class Response(client_reqrep.ClientResponse):
     request = None
     meta = None
     callback = None
+
+    async def selector(self) -> parsel.Selector:
+        return parsel.Selector(text=await self.text())
 
 
 class Session(aiohttp.ClientSession):
