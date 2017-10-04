@@ -145,10 +145,10 @@ class Engine:
         callback = response.callback or spider.process_response
 
         try:
-            if not inspect.iscoroutinefunction(callback):
-                raise TypeError('%s is not a coroutine function' % str(callback))
-
-            await callback(response)
+            if inspect.iscoroutinefunction(callback):
+                await callback(response)
+            elif inspect.isfunction(callback) or inspect.ismethod(callback):
+                callback(response)
         except:
             self.logger.exception('Error while executing callback %s, spider %s, %s %s',
                                   callback.__name__, spider, response.method, response.url)

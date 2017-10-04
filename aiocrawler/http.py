@@ -1,5 +1,3 @@
-import inspect
-
 import aiohttp
 import parsel
 from aiohttp import client_reqrep
@@ -12,8 +10,6 @@ class Request:
         self.url = str(url)
         self.method = method
         self.callback = callback
-        if self.callback and not inspect.iscoroutinefunction(self.callback):
-            raise TypeError('callback parameter must be a coroutine function, not %s' % type(self.callback))
         self.kwargs = kwargs
         self.meta = meta or dict()
         self.priority = priority
