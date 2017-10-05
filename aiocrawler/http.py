@@ -2,6 +2,8 @@ import aiohttp
 import parsel
 from aiohttp import client_reqrep
 
+from aiocrawler.utils import asynccontextmanager
+
 
 class Request:
     meta = None
@@ -29,3 +31,11 @@ class Session(aiohttp.ClientSession):
     def __init__(self, **kwargs):
         kwargs.setdefault('response_class', Response)
         super(Session, self).__init__(**kwargs)
+
+    @asynccontextmanager.async_contextmanager
+    async def execute_request(self, request):
+        async with self.request(request.method, request.url, **request.kwargs) as response:
+            response.request = request
+            response.meta = request.meta.copy()
+            response.callback = request.callback
+            yield response

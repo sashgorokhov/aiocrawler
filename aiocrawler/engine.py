@@ -120,11 +120,7 @@ class Engine:
         self.logger.debug('Started processing request from spider "%s": %s %s', spider, request.method, request.url)
         try:
             session = self.get_session(spider)
-            request.kwargs.setdefault('timeout', 30)
-            async with session.request(request.method, request.url, **request.kwargs) as response:
-                response.request = request
-                response.meta = request.meta.copy()
-                response.callback = request.callback
+            async with session.execute_request(request) as response:
                 await self.process_response(spider, response)
         except:
             self.logger.exception('Error while processing request from spider "%s": %s %s',
@@ -256,5 +252,6 @@ class Engine:
         Return a session for given spider.
 
         :param aiocrawler.spider.Spider spider:
+        :rtype: aiocrawler.http.Session
         """
         return spider.session
