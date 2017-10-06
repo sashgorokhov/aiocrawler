@@ -40,7 +40,7 @@ class Engine:
         self._spider_state = dict()
         self._shutdown_lock = asyncio.Lock(loop=self.loop)
 
-        self.signals = signals.SignalManager(self)
+        self.signals = signals.SignalManager.from_engine(self)
 
     async def add_request(self, spider, request):
         """

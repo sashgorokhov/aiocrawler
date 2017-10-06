@@ -11,6 +11,10 @@ class SignalManager:
     def __init__(self, sender=dispatcher.Anonymous):
         self.sender = sender
 
+    @classmethod
+    def from_engine(cls, engine):
+        return cls(engine)
+
     def connect(self, receiver, signal, **kwargs):
         """
         Connect a receiver to specified signal.
