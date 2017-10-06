@@ -109,3 +109,9 @@ class Spider:
         if self._session is None:
             self._session = self.create_session()
         return self._session
+
+    async def process_item(self, item):
+        """
+        Process scraped item.
+        """
+        pass

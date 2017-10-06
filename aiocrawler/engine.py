@@ -1,6 +1,5 @@
 import asyncio
 import collections
-import functools
 import inspect
 import logging
 import signal
@@ -15,13 +14,10 @@ class Engine:
     :param bool is_shutdown: Indicates that engine has stopped
     :param int global_concurrent_requests_limit: Limit engine-wide concurrent requests
     :param list[Spider] spiders: List of spiders
-
-
-    :param dict[aiocrawler.spider.Spider, aiocrawler.http.Session] _spider_sessions:
-    :param dict[aiocrawler.spider.Spider, asyncio.Queue] _spider_queues:
     """
     is_shutdown = False
     global_concurrent_requests_limit = 100
+    global_concurrent_pipelines_limit = 1000
 
     def __init__(self, loop=None):
         """
@@ -35,12 +31,9 @@ class Engine:
         self.loop.add_signal_handler(signal.SIGTERM, self.shutdown)
 
         self._watched_futures = collections.defaultdict(list)
-
         self._requests_semaphore = asyncio.Semaphore(self.global_concurrent_requests_limit)
-        self._spider_sessions = dict()
+        self._pipelines_semaphore = asyncio.Semaphore(self.global_concurrent_pipelines_limit)
         self._spider_state = dict()
-        self._spider_queues = collections.defaultdict(functools.partial(asyncio.Queue, loop=self.loop))
-
         self._shutdown_lock = asyncio.Lock(loop=self.loop)
 
     async def add_request(self, spider, request):
@@ -51,7 +44,7 @@ class Engine:
         :param aiocrawler.http.Request request: Request to execute
         """
         self.logger.debug('Enqueued request from spider "%s": %s %s', spider, request.method, request.url)
-        await self._spider_queues[spider].put(request)
+        await self._spider_state[spider]['requests'].put(request)
         return request
 
     def start(self):
@@ -63,13 +56,16 @@ class Engine:
             task = self.loop.create_task(self.start_spider(spider))
             self.watch_future(spider, task)
         try:
-            self.loop.run_until_complete(self._download_loop())
+            self.loop.run_until_complete(asyncio.gather(
+                self._download_loop(),
+                self._pipeline_loop(),
+                loop=self.loop))
         except KeyboardInterrupt:
             self.logger.warning('Loop is cancelled by user via KeyboardInterrupt')
         except CancelledError:
             pass
         finally:
-            self.logger.info('Loop stopped')
+            self.logger.debug('Loop stopped')
             self.shutdown()
             if not self.loop.is_closed():
                 self.loop.close()
@@ -93,7 +89,8 @@ class Engine:
 
     async def _download_loop(self):
         while not self.is_shutdown:
-            for spider, queue in self._spider_queues.items():
+            for spider in self.spiders:
+                queue = self._spider_state[spider]['requests']
                 if queue.empty() or self._spider_state[spider]['requests_semaphore'].locked():
                     continue
 
@@ -110,9 +107,29 @@ class Engine:
 
             await asyncio.sleep(0.1)
 
+    async def _pipeline_loop(self):
+        while not self.is_shutdown:
+            for spider in self.spiders:
+                await self._pipelines_semaphore.acquire()
+                try:
+                    item = await self._spider_state[spider]['items'].get()
+                    task = self.loop.create_task(self.process_item(spider, item))
+                    self.watch_future(spider, task)
+                except:
+                    self._pipelines_semaphore.release()
+            await asyncio.sleep(0.1)
+
+    async def process_item(self, spider, item):
+        try:
+            # TODO: Process with item pipelines
+            await spider.process_item(item)
+        except:
+            self.logger.exception('Error while processing item in spider "%s"')
+            self.logger.debug('Failed item: %s', item)
+
     async def process_request(self, spider, request):
         """
-        Executes request and spider callback
+        Executes request and processes response
 
         :param aiocrawler.spider.Spider spider:
         :param aiocrawler.http.Request request:
@@ -133,7 +150,6 @@ class Engine:
         """
         Processes received response by calling associated spider callback.
         If not set, default `spider.process_response` will be used.
-        Callback is expected to be a coroutine function.
 
         :param aiocrawler.spider.Spider spider:
         :param aiocrawler.http.Response response:
@@ -141,13 +157,51 @@ class Engine:
         callback = response.callback or spider.process_response
 
         try:
-            if inspect.iscoroutinefunction(callback):
-                await callback(response)
-            elif inspect.isfunction(callback) or inspect.ismethod(callback):
-                callback(response)
+            await self._execute_spider_callback(spider, callback, response)
         except:
             self.logger.exception('Error while executing callback %s, spider %s, %s %s',
                                   callback.__name__, spider, response.method, response.url)
+
+    async def _execute_spider_callback(self, spider, callback, *args, **kwargs):
+        """
+        Determines how to execute a callback and how to handle its results.
+
+        :param aiocrawler.spider.Spider spider:
+        :param callback:
+        :param args: Passed to callback
+        :param kwargs: Passed to callback
+        """
+        if inspect.iscoroutinefunction(callback):
+            result = await callback(*args, **kwargs)
+            await self._process_simple_callback_result(spider, result)
+        elif inspect.isasyncgenfunction(callback):
+            async for item in callback(*args, **kwargs):
+                await self.add_item(spider, item)
+        elif inspect.isgeneratorfunction(callback):
+            for item in callback(*args, **kwargs):
+                await self.add_item(spider, item)
+        elif inspect.isfunction(callback) or inspect.ismethod(callback):
+            result = callback(*args, **kwargs)
+            await self._process_simple_callback_result(spider, result)
+        else:
+            raise TypeError('Unhandled callback type "%s": %s' % (callback.__name__, type(callback)))
+
+    async def _process_simple_callback_result(self, spider, result):
+        if result:
+            if isinstance(result, collections.Iterable):
+                for item in result:
+                    await self.add_item(spider, item)
+            else:
+                await self.add_item(spider, result)
+
+    async def add_item(self, spider, item):
+        """
+        Puts scraped item into internal queue to do further processing asynchronously,
+
+        :param aiocrawler.spider.Spider spider:
+        :param item:
+        """
+        await self._spider_state[spider]['items'].put(item)
 
     def add_spider(self, spider):
         """
@@ -158,6 +212,20 @@ class Engine:
         if spider not in self.spiders:
             self.spiders.append(spider)
 
+    def _init_spider_state(self, spider):
+        """
+        Return initial spider state
+
+        :param spider:
+        :rtype: dict[aiocrawler.spider.Spider, dict]
+        """
+        return {
+            'close_lock': asyncio.Lock(loop=self.loop),
+            'requests_semaphore': asyncio.Semaphore(spider.concurrent_requests_limit, loop=self.loop),
+            'requests': asyncio.Queue(loop=self.loop),
+            'items': asyncio.Queue(loop=self.loop),
+        }
+
     async def start_spider(self, spider):
         """
         Start spider by calling spider's `start` method.
@@ -165,11 +233,9 @@ class Engine:
         :param aiocrawler.spider.Spider spider:
         """
         self.logger.info('Starting spider "%s"', spider)
-        self._spider_state[spider] = {
-            'close_lock': asyncio.Lock(loop=self.loop),
-            'requests_semaphore': asyncio.Semaphore(spider.concurrent_requests_limit, loop=self.loop)
-        }
+
         try:
+            self._spider_state[spider] = self._init_spider_state(spider)
             await spider.start()
         except:
             self.logger.exception('Error while starting spider %s', str(spider))
@@ -182,7 +248,7 @@ class Engine:
         :rtype: bool
         """
         pending_futures = self._clear_watched_futures(spider)
-        return not len(pending_futures) and self._spider_queues[spider].empty()
+        return not len(pending_futures) and self._spider_state[spider]['requests'].empty()
 
     async def _attempt_close_spider(self, spider):
         """
@@ -210,6 +276,8 @@ class Engine:
         spider.closed = True
         try:
             spider.close_spider()
+            if not spider.session.closed:
+                spider.session.close()
         except:
             self.logger.exception('Error while closing spider "%s"', spider)
 
@@ -228,10 +296,6 @@ class Engine:
 
         for spider in self.spiders:
             self.close_spider(spider)
-
-        for session in self._spider_sessions.values():
-            if not session.closed:
-                session.close()
 
         for task in asyncio.Task.all_tasks():
             task.cancel()
