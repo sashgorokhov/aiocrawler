@@ -18,7 +18,6 @@ class Request:
 
 
 class Response(client_reqrep.ClientResponse):
-    request = None
     meta = None
     callback = None
 
@@ -35,7 +34,6 @@ class Session(aiohttp.ClientSession):
     @asynccontextmanager.async_contextmanager
     async def execute_request(self, request):
         async with self.request(request.method, request.url, **request.kwargs) as response:
-            response.request = request
             response.meta = request.meta.copy()
             response.callback = request.callback
             yield response
