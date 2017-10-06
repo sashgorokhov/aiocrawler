@@ -47,21 +47,17 @@ class Spider:
         """
         Shortcut for creating GET request.
         Creates `Request` object and adds it to a queue.
-
-        :return: Added request object
         """
         request = Request(url=url, method='GET', callback=callback, meta=meta, **kwargs)
-        return await self.add_request(request)
+        await self.add_request(request)
 
     async def post(self, url, callback=None, meta=None, **kwargs):
         """
         Shortcut for creating POST request.
         Creates `Request` object and adds it to a queue.
-
-        :return: Added request object
         """
         request = Request(url=url, method='POST', callback=callback, meta=meta, **kwargs)
-        return await self.add_request(request)
+        await self.add_request(request)
 
     async def start(self):
         """
