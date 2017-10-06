@@ -3,7 +3,10 @@ import collections
 import inspect
 import logging
 import signal
+import sys
 from concurrent.futures import CancelledError
+
+from aiocrawler import signals
 
 
 class Engine:
@@ -14,6 +17,7 @@ class Engine:
     :param bool is_shutdown: Indicates that engine has stopped
     :param int global_concurrent_requests_limit: Limit engine-wide concurrent requests
     :param list[Spider] spiders: List of spiders
+    :param aiocrawler.signals.SignalManager signals: Signals manager
     """
     is_shutdown = False
     global_concurrent_requests_limit = 100
@@ -27,14 +31,16 @@ class Engine:
 
         self.loop = loop or asyncio.get_event_loop()
         self.loop.set_exception_handler(self._engine_exception_handler)
-        self.loop.add_signal_handler(signal.SIGHUP, self.shutdown)
-        self.loop.add_signal_handler(signal.SIGTERM, self.shutdown)
+        self.loop.add_signal_handler(signal.SIGHUP, lambda: self.loop.run_until_complete(self.shutdown()))
+        self.loop.add_signal_handler(signal.SIGTERM, lambda: self.loop.run_until_complete(self.shutdown()))
 
         self._watched_futures = collections.defaultdict(list)
         self._requests_semaphore = asyncio.Semaphore(self.global_concurrent_requests_limit)
         self._pipelines_semaphore = asyncio.Semaphore(self.global_concurrent_pipelines_limit)
         self._spider_state = dict()
         self._shutdown_lock = asyncio.Lock(loop=self.loop)
+
+        self.signals = signals.SignalManager(self)
 
     async def add_request(self, spider, request):
         """
@@ -43,15 +49,17 @@ class Engine:
         :param aiocrawler.spider.Spider spider: Spider that generated that request
         :param aiocrawler.http.Request request: Request to execute
         """
-        self.logger.debug('Enqueued request from spider "%s": %s %s', spider, request.method, request.url)
+        await self.signals.send(signals.request_received, spider=spider, request=request)
         await self._spider_state[spider]['requests'].put(request)
-        return request
+        self.logger.debug('Enqueued request from spider "%s": %s %s', spider, request.method, request.url)
 
     def start(self):
         """
         Runs event loop.
         Blocks until all spiders are closed.
         """
+        self.loop.run_until_complete(self.signals.send(signals.engine_started, engine=self))
+
         for spider in self.spiders:
             task = self.loop.create_task(self.start_spider(spider))
             self.watch_future(spider, task)
@@ -66,7 +74,10 @@ class Engine:
             pass
         finally:
             self.logger.debug('Loop stopped')
-            self.shutdown()
+            self.loop.run_until_complete(self.shutdown())
+            self.loop.run_until_complete(self.signals.send(signals.engine_stopped, engine=self))
+            for task in asyncio.Task.all_tasks():
+                task.cancel()
             if not self.loop.is_closed():
                 self.loop.close()
 
@@ -120,6 +131,8 @@ class Engine:
             await asyncio.sleep(0.1)
 
     async def process_item(self, spider, item):
+        await self.signals.send(signals.item_scraped, spider=spider, item=item)
+
         try:
             # TODO: Process with item pipelines
             await spider.process_item(item)
@@ -138,6 +151,7 @@ class Engine:
         try:
             session = self.get_session(spider)
             async with session.execute_request(request) as response:
+                await self.signals.send(signals.response_received, spider=spider, request=request, response=response)
                 await self.process_response(spider, response)
         except:
             self.logger.exception('Error while processing request from spider "%s": %s %s',
@@ -159,6 +173,8 @@ class Engine:
         try:
             await self._execute_spider_callback(spider, callback, response)
         except:
+            await self.signals.send_async(signals.spider_error, spider=spider, response=response,
+                                          exc_info=sys.exc_info())
             self.logger.exception('Error while executing callback %s, spider %s, %s %s',
                                   callback.__name__, spider, response.method, response.url)
 
@@ -236,6 +252,7 @@ class Engine:
 
         try:
             self._spider_state[spider] = self._init_spider_state(spider)
+            await self.signals.send(signals.spider_opened, spider=spider)
             await spider.start()
         except:
             self.logger.exception('Error while starting spider %s', str(spider))
@@ -260,11 +277,11 @@ class Engine:
         with (await self._shutdown_lock):
             with (await self._spider_state[spider]['close_lock']):
                 if self._is_spider_finished(spider):
-                    self.close_spider(spider)
+                    await self.close_spider(spider)
                 if all(spider.closed for spider in self.spiders):
-                    self.loop.call_soon_threadsafe(self.shutdown)
+                    self.loop.create_task(self.shutdown())
 
-    def close_spider(self, spider):
+    async def close_spider(self, spider):
         """
         Close spider.
 
@@ -274,6 +291,7 @@ class Engine:
             return
         self.logger.info('Closing spider "%s"', spider)
         spider.closed = True
+        await self.signals.send(signals.spider_closed, spider=spider)
         try:
             spider.close_spider()
             if not spider.session.closed:
@@ -281,7 +299,7 @@ class Engine:
         except:
             self.logger.exception('Error while closing spider "%s"', spider)
 
-    def shutdown(self):
+    async def shutdown(self):
         """
         Shutdown engine, cancel all pending tasks and perform some tear down actions,
         like closing spiders and sessions.
@@ -295,10 +313,8 @@ class Engine:
         self.is_shutdown = True
 
         for spider in self.spiders:
-            self.close_spider(spider)
-
-        for task in asyncio.Task.all_tasks():
-            task.cancel()
+            if not spider.closed:
+                await self.close_spider(spider)
 
     def _engine_exception_handler(self, loop, context):
         self.logger.error('Uncaught exception: %s', str(context))
