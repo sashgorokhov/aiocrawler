@@ -68,9 +68,7 @@ class SignalManager:
         :param kwargs:
         :return: A task that resolves into list of results of signal handlers, once they are completed
         """
-        sender = kwargs.get('sender', self.sender)
-        coros = self._get_receiver_coros(sender, signal, **kwargs)
-        return asyncio.ensure_future(asyncio.gather(*coros))
+        return asyncio.ensure_future(self.send(signal, **kwargs))
 
     async def _call_receiver(self, receiver, **kwargs):
         """
