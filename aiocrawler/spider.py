@@ -15,6 +15,7 @@ class Spider:
     concurrent_requests_limit = 20
 
     pipelines = []
+    downloader_middlewares = []
 
     def __init__(self, engine):
         self.engine = engine
@@ -109,3 +110,6 @@ class Spider:
 
     def get_pipelines(self):
         return self.pipelines
+
+    def get_downloader_middlewares(self):
+        return self.downloader_middlewares

@@ -42,8 +42,6 @@ class Engine:
         self._shutdown_lock = asyncio.Lock(loop=self.loop)
 
         self.signals = signals.SignalManager.from_engine(self)  # type: signals.SignalManager
-        self._downloader_middleware = downloadermiddleware.DownloaderMiddleware.from_engine(
-            self)  # type: downloadermiddleware.DownloaderMiddleware
 
     async def add_request(self, spider, request):
         """
@@ -156,7 +154,8 @@ class Engine:
         """
         try:
             try:
-                mdlwr_result = await self._downloader_middleware.process_request(spider, request)
+                mdlwr_result = await self._spider_state[spider]['downloader_middleware'].process_request(spider,
+                                                                                                         request)
                 if isinstance(mdlwr_result, http.Response):
                     await self._process_response(spider, request, response=mdlwr_result)
                     return
@@ -183,7 +182,8 @@ class Engine:
 
     async def _process_response(self, spider, request, response):
         try:
-            mdlwr_result = await self._downloader_middleware.process_response(spider, request, response)
+            mdlwr_result = await self._spider_state[spider]['downloader_middleware'].process_response(spider, request,
+                                                                                                      response)
             if isinstance(mdlwr_result, http.Response):
                 response = mdlwr_result
             elif isinstance(mdlwr_result, http.Request):
@@ -283,13 +283,19 @@ class Engine:
         :param spider:
         :rtype: dict[aiocrawler.spider.Spider, dict]
         """
-        return {
+        state = {
             'close_lock': asyncio.Lock(loop=self.loop),
             'requests_semaphore': asyncio.Semaphore(spider.concurrent_requests_limit, loop=self.loop),
             'requests': asyncio.Queue(loop=self.loop),
             'items': asyncio.Queue(loop=self.loop),
-            'pipelines': pipelines.ItemPipelineManager.from_engine(self)
+            'pipelines': pipelines.ItemPipelineManager.from_engine(self),
+            'downloader_middleware': downloadermiddleware.DownloaderMiddleware.from_engine(self)
         }
+
+        state['pipelines'].set_middlewares(spider.get_pipelines())
+        state['downloader_middleware'].set_middlewares(spider.get_downloader_middlewares())
+
+        return state
 
     async def start_spider(self, spider):
         """
@@ -301,7 +307,6 @@ class Engine:
 
         try:
             self._spider_state[spider] = self._init_spider_state(spider)
-            self._spider_state[spider]['pipelines'].set_middlewares(spider.get_pipelines())
             await self.signals.send(signals.spider_opened, spider=spider)
             await spider.start()
         except:
