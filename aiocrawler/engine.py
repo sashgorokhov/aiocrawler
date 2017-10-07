@@ -6,7 +6,7 @@ import signal
 import sys
 from concurrent.futures import CancelledError
 
-from aiocrawler import signals, pipelines
+from aiocrawler import signals, pipelines, downloadermiddleware, http, exceptions
 
 
 class Engine:
@@ -42,6 +42,8 @@ class Engine:
         self._shutdown_lock = asyncio.Lock(loop=self.loop)
 
         self.signals = signals.SignalManager.from_engine(self)  # type: signals.SignalManager
+        self._downloader_middleware = downloadermiddleware.DownloaderMiddleware.from_engine(
+            self)  # type: downloadermiddleware.DownloaderMiddleware
 
     async def add_request(self, spider, request):
         """
@@ -152,12 +154,26 @@ class Engine:
         :param aiocrawler.spider.Spider spider:
         :param aiocrawler.http.Request request:
         """
-        self.logger.debug('Started processing request from spider "%s": %s %s', spider, request.method, request.url)
         try:
+            try:
+                mdlwr_result = await self._downloader_middleware.process_request(spider, request)
+                if isinstance(mdlwr_result, http.Response):
+                    await self._process_response(spider, request, response=mdlwr_result)
+                    return
+                elif isinstance(mdlwr_result, http.Request):
+                    await self.add_request(spider, mdlwr_result)
+                    return
+            except exceptions.IgnoreRequest:
+                self.logger.info('Ignoring request %s %s', request.method, request.url)
+                return
+            except:
+                self.logger.exception('Error executing downloader middleware')
+                return
+
+            self.logger.debug('Started processing request from spider "%s": %s %s', spider, request.method, request.url)
             session = self.get_session(spider)
             async with session.execute_request(request) as response:
-                await self.signals.send(signals.response_received, spider=spider, request=request, response=response)
-                await self.process_response(spider, response)
+                await self._process_response(spider, request, response)
         except:
             self.logger.exception('Error while processing request from spider "%s": %s %s',
                                   spider, request.method, request.url)
@@ -165,14 +181,33 @@ class Engine:
             self._spider_state[spider]['requests_semaphore'].release()
             self._requests_semaphore.release()
 
-    async def process_response(self, spider, response):
+    async def _process_response(self, spider, request, response):
+        try:
+            mdlwr_result = await self._downloader_middleware.process_response(spider, request, response)
+            if isinstance(mdlwr_result, http.Response):
+                response = mdlwr_result
+            elif isinstance(mdlwr_result, http.Request):
+                await self.add_request(spider, mdlwr_result)
+                return
+        except exceptions.IgnoreRequest:
+            self.logger.info('Ignoring response on %s %s: status %s', request.method, request.url, response.status)
+            return
+        except:
+            self.logger.exception('Error executing downloader middleware')
+
+        await self.process_response(spider, request, response)
+
+    async def process_response(self, spider, request, response):
         """
         Processes received response by calling associated spider callback.
         If not set, default `spider.process_response` will be used.
 
         :param aiocrawler.spider.Spider spider:
+        :param aiocrawler.http.Request request:
         :param aiocrawler.http.Response response:
         """
+        await self.signals.send(signals.response_received, spider=spider, request=request, response=response)
+
         callback = response.callback or spider.process_response
 
         try:

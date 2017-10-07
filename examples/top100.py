@@ -62,7 +62,7 @@ class Top100Spider(aiocrawler.Spider):
         item['meta'] = sel.css('meta::attr(content)').extract()
         yield item
 
-    async def item_scraped(self, spider, item):
+    def item_scraped(self, spider, item):
         self.logger.info('Scraped item: %s', item)
 
     def close_spider(self, spider):
