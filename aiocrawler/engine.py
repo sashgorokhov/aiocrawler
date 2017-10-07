@@ -139,6 +139,8 @@ class Engine:
         except:
             self.logger.exception('Error while processing item in spider "%s"')
             self.logger.debug('Failed item: %s', item)
+        finally:
+            self._pipelines_semaphore.release()
 
     async def process_request(self, spider, request):
         """
