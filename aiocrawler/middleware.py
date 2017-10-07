@@ -2,6 +2,8 @@ import asyncio
 import inspect
 from collections import defaultdict
 
+from aiocrawler import signals
+
 
 class MiddlewareManager:
     def __init__(self, engine):
@@ -15,7 +17,13 @@ class MiddlewareManager:
 
     @classmethod
     def from_engine(cls, engine):
-        return cls(engine)
+        """
+        :param aiocrawler.engine.Engine engine:
+        """
+        middleware_manager = cls(engine)
+        engine.signals.connect(middleware_manager.open_spider, signals.spider_opened)
+        engine.signals.connect(middleware_manager.close_spider, signals.spider_closed)
+        return middleware_manager
 
     def add_middleware(self, middleware):
         if isinstance(middleware, type):
@@ -56,7 +64,7 @@ class MiddlewareManager:
     async def _call_method(self, method, *args, **kwargs):
         if inspect.iscoroutinefunction(method):
             return await method(*args, **kwargs)
-        elif inspect.isfunction(method):
+        elif inspect.isfunction(method) or inspect.ismethod(method):
             return method(*args, **kwargs)
         else:
             raise TypeError('Unhandled middleware method %s type: %s', method.__name__, type(method))

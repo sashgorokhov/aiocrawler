@@ -14,14 +14,21 @@ class Spider:
     _logger = None
     concurrent_requests_limit = 20
 
+    pipelines = []
+
     def __init__(self, engine):
         self.engine = engine
 
-    def get_name(self):
+    @classmethod
+    def from_engine(cls, engine):
+        return cls(engine)
+
+    @classmethod
+    def get_name(cls):
         """
         Return spider name. If not set, return current class name.
         """
-        return self.name or self.__class__.__name__
+        return cls.name or cls.__name__
 
     @property
     def logger(self):
@@ -66,12 +73,6 @@ class Spider:
         """
         raise NotImplementedError()
 
-    def close_spider(self):
-        """
-        Called when spider is closed
-        """
-        pass
-
     async def process_response(self, response):
         """
         Default callback for processing responses.
@@ -106,8 +107,5 @@ class Spider:
             self._session = self.create_session()
         return self._session
 
-    async def process_item(self, item):
-        """
-        Process scraped item.
-        """
-        pass
+    def get_pipelines(self):
+        return self.pipelines

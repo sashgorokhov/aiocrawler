@@ -6,7 +6,7 @@ import signal
 import sys
 from concurrent.futures import CancelledError
 
-from aiocrawler import signals
+from aiocrawler import signals, pipelines
 
 
 class Engine:
@@ -16,7 +16,8 @@ class Engine:
     :param asyncio.base_events.BaseEventLoop loop:
     :param bool is_shutdown: Indicates that engine has stopped
     :param int global_concurrent_requests_limit: Limit engine-wide concurrent requests
-    :param list[Spider] spiders: List of spiders
+    :param int global_concurrent_pipelines_limit: Limit engine-wide concurrent item processing
+    :param dict[str, aiocrawler.spider.Spider] spiders: Registered spiders
     :param aiocrawler.signals.SignalManager signals: Signals manager
     """
     is_shutdown = False
@@ -27,7 +28,7 @@ class Engine:
         """
         :param asyncio.base_events.BaseEventLoop loop: custom event loop to work in
         """
-        self.spiders = []
+        self.spiders = dict()
 
         self.loop = loop or asyncio.get_event_loop()
         self.loop.set_exception_handler(self._engine_exception_handler)
@@ -40,7 +41,7 @@ class Engine:
         self._spider_state = dict()
         self._shutdown_lock = asyncio.Lock(loop=self.loop)
 
-        self.signals = signals.SignalManager.from_engine(self)
+        self.signals = signals.SignalManager.from_engine(self)  # type: signals.SignalManager
 
     async def add_request(self, spider, request):
         """
@@ -60,7 +61,7 @@ class Engine:
         """
         self.loop.run_until_complete(self.signals.send(signals.engine_started, engine=self))
 
-        for spider in self.spiders:
+        for spider in self.spiders.values():
             task = self.loop.create_task(self.start_spider(spider))
             self.watch_future(spider, task)
         try:
@@ -74,7 +75,8 @@ class Engine:
             pass
         finally:
             self.logger.debug('Loop stopped')
-            self.loop.run_until_complete(self.shutdown())
+            if not self.is_shutdown:
+                self.loop.run_until_complete(self.shutdown())
             self.loop.run_until_complete(self.signals.send(signals.engine_stopped, engine=self))
             for task in asyncio.Task.all_tasks():
                 task.cancel()
@@ -100,7 +102,7 @@ class Engine:
 
     async def _download_loop(self):
         while not self.is_shutdown:
-            for spider in self.spiders:
+            for spider in self.spiders.values():
                 queue = self._spider_state[spider]['requests']
                 if queue.empty() or self._spider_state[spider]['requests_semaphore'].locked():
                     continue
@@ -120,7 +122,7 @@ class Engine:
 
     async def _pipeline_loop(self):
         while not self.is_shutdown:
-            for spider in self.spiders:
+            for spider in self.spiders.values():
                 await self._pipelines_semaphore.acquire()
                 try:
                     item = await self._spider_state[spider]['items'].get()
@@ -131,11 +133,12 @@ class Engine:
             await asyncio.sleep(0.1)
 
     async def process_item(self, spider, item):
-        await self.signals.send(signals.item_scraped, spider=spider, item=item)
-
         try:
-            # TODO: Process with item pipelines
-            await spider.process_item(item)
+            item = await self._spider_state[spider]['pipelines'].process_item(spider=spider, item=item)
+            if item is not None:
+                await self.signals.send(signals.item_scraped, spider=spider, item=item)
+            else:
+                await self.signals.send(signals.item_dropped, spider=spider, item=item)
         except:
             self.logger.exception('Error while processing item in spider "%s"')
             self.logger.debug('Failed item: %s', item)
@@ -223,12 +226,20 @@ class Engine:
 
     def add_spider(self, spider):
         """
-        Add spider to engine's spiders list
+        Add spider to engine's spiders
 
-        :param aiocrawler.spider.Spider spider:
+        :param spider: Spider class or spider object
         """
-        if spider not in self.spiders:
-            self.spiders.append(spider)
+        spider_name = spider.get_name()
+
+        if isinstance(spider, type):
+            if hasattr(spider, 'from_engine'):
+                spider = spider.from_engine(self)
+            else:
+                spider = spider()
+
+        if spider_name not in self.spiders:
+            self.spiders[spider_name] = spider
 
     def _init_spider_state(self, spider):
         """
@@ -242,6 +253,7 @@ class Engine:
             'requests_semaphore': asyncio.Semaphore(spider.concurrent_requests_limit, loop=self.loop),
             'requests': asyncio.Queue(loop=self.loop),
             'items': asyncio.Queue(loop=self.loop),
+            'pipelines': pipelines.ItemPipelineManager.from_engine(self)
         }
 
     async def start_spider(self, spider):
@@ -254,6 +266,7 @@ class Engine:
 
         try:
             self._spider_state[spider] = self._init_spider_state(spider)
+            self._spider_state[spider]['pipelines'].set_middlewares(spider.get_pipelines())
             await self.signals.send(signals.spider_opened, spider=spider)
             await spider.start()
         except:
@@ -280,7 +293,7 @@ class Engine:
             with (await self._spider_state[spider]['close_lock']):
                 if self._is_spider_finished(spider):
                     await self.close_spider(spider)
-                if all(spider.closed for spider in self.spiders):
+                if all(spider.closed for spider in self.spiders.values()):
                     self.loop.create_task(self.shutdown())
 
     async def close_spider(self, spider):
@@ -293,13 +306,10 @@ class Engine:
             return
         self.logger.info('Closing spider "%s"', spider)
         spider.closed = True
+
         await self.signals.send(signals.spider_closed, spider=spider)
-        try:
-            spider.close_spider()
-            if not spider.session.closed:
-                spider.session.close()
-        except:
-            self.logger.exception('Error while closing spider "%s"', spider)
+        if not spider.session.closed:
+            spider.session.close()
 
     async def shutdown(self):
         """
@@ -314,7 +324,10 @@ class Engine:
         self.logger.info('Shutting down')
         self.is_shutdown = True
 
-        for spider in self.spiders:
+        if self._pipelines_semaphore.locked():
+            self._pipelines_semaphore.release()
+
+        for spider in self.spiders.values():
             if not spider.closed:
                 await self.close_spider(spider)
 
