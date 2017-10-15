@@ -8,8 +8,9 @@ logger = logging.getLogger(__name__)
 
 
 class SignalManager:
-    def __init__(self, sender=dispatcher.Anonymous):
+    def __init__(self, sender=dispatcher.Anonymous, loop=None):
         self.sender = sender
+        self.loop = loop or asyncio.get_event_loop()
 
     @classmethod
     def from_engine(cls, engine):
@@ -49,7 +50,7 @@ class SignalManager:
         :return: generator over coroutines that call receiver functions
         """
         for receiver in self._get_receivers(sender, signal):
-            yield self._call_receiver(receiver, catcherr=catcherr, **kwargs)
+            yield self._call_receiver(receiver=receiver, catcherr=catcherr, **kwargs)
 
     async def send(self, signal, catcherr=True, **kwargs):
         """
@@ -60,9 +61,9 @@ class SignalManager:
         :param kwargs: Passed to receiver
         :return: List of results of signal handlers
         """
-        sender = kwargs.get('sender', self.sender)
-        coros = self._get_receiver_coros(sender, signal, catcherr=catcherr, **kwargs)
-        return await asyncio.gather(*coros)
+        kwargs.setdefault('sender', self.sender)
+        coros = self._get_receiver_coros(signal=signal, catcherr=catcherr, **kwargs)
+        return await asyncio.gather(*coros, loop=self.loop)
 
     async def send_async(self, signal, catcherr=True, **kwargs):
         """
@@ -73,7 +74,7 @@ class SignalManager:
         :param kwargs: Passed to receiver
         :return: A task that resolves into list of results of signal handlers, once they are completed
         """
-        return asyncio.ensure_future(self.send(signal, catcherr=catcherr, **kwargs))
+        return asyncio.ensure_future(self.send(signal, catcherr=catcherr, **kwargs), loop=self.loop)
 
     async def _call_receiver(self, receiver, catcherr=True, **kwargs):
         """
@@ -87,13 +88,16 @@ class SignalManager:
         try:
             if inspect.iscoroutinefunction(receiver):
                 return await receiver(**kwargs)
+            elif inspect.isgeneratorfunction(receiver) or inspect.isasyncgenfunction(receiver):
+                pass
             elif inspect.isfunction(receiver) or inspect.ismethod(receiver):
                 return receiver(**kwargs)
-            else:
-                raise TypeError('Unhandled receiver %s type: %s' % (receiver.__name__, type(receiver)))
+
+            raise TypeError('Unhandled receiver %s type: %s' % (receiver.__name__, type(receiver)))
         except:
             if catcherr:
-                logging.exception('Error while calling signal receiver %s', receiver.__name__)
+                logger.exception('Error while calling signal receiver %s', receiver.__name__)
+                return
             else:
                 raise
 
