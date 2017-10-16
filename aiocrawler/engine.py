@@ -125,8 +125,8 @@ class Engine:
             for spider in self.spiders.values():
                 if self._spider_state[spider]['items'].empty():
                     continue
-                await self._pipelines_semaphore.acquire()
                 try:
+                    await self._pipelines_semaphore.acquire()
                     item = await self._spider_state[spider]['items'].get()
                     task = self.loop.create_task(self._process_item(spider, item))
                     self.watch_future(spider, task)
@@ -341,7 +341,8 @@ class Engine:
         :rtype: bool
         """
         pending_futures = self._clear_watched_futures(spider)
-        return not len(pending_futures) and self._spider_state[spider]['requests'].empty()
+        return not len(pending_futures) and self._spider_state[spider]['requests'].empty() and \
+               self._spider_state[spider]['items'].empty()
 
     async def _attempt_close_spider(self, spider):
         """
