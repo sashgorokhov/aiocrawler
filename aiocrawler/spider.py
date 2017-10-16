@@ -51,6 +51,9 @@ class Spider:
         """
         await self.engine.add_request(self, request)
 
+    async def add_item(self, item):
+        await self.engine.add_item(self, item)
+
     async def get(self, url, callback=None, meta=None, **kwargs):
         """
         Shortcut for creating GET request.
