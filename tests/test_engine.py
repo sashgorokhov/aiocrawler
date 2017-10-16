@@ -60,15 +60,27 @@ def test_start(signals_to_mock):
 
 
 @pytest.mark.asyncio
-async def test_process_request(configured_engine, spider):
+async def test_process_request(configured_engine: aiocrawler.Engine, spider):
     request = aiocrawler.Request('http://example.com', 'GET')
     response = Response('GET', URL('http://example.com'))
 
     process_response_mock = mock.Mock(name='process_response_mock')
-
     response.callback = wrap_mock(process_response_mock)
+    response_received_mock = mock.Mock(name='response_received_mock')
+    response_received_receiver = wrap_mock(response_received_mock)
+    configured_engine.signals.connect(response_received_receiver, signals.response_received)
+
+    downloader_middleware_mock = mock.Mock(name='downloader_middleware_mock', return_value=None)
+
+    configured_engine._spider_state[spider]['downloader_middleware']._add_method('process_request',
+                                                                                 wrap_mock(downloader_middleware_mock))
+    configured_engine._spider_state[spider]['downloader_middleware']._add_method('process_response',
+                                                                                 wrap_mock(downloader_middleware_mock))
 
     with mock_execute_request(response):
         await configured_engine.process_request(spider, request)
 
     process_response_mock.assert_called()
+    response_received_mock.assert_called()
+    downloader_middleware_mock.assert_called()
+    assert downloader_middleware_mock.call_count == 2

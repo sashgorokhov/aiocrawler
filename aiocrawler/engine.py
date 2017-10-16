@@ -303,7 +303,7 @@ class Engine:
         Return initial spider state
 
         :param spider:
-        :rtype: dict[aiocrawler.spider.Spider, dict]
+        :rtype: dict
         """
         state = {
             'close_lock': asyncio.Lock(loop=self.loop),
