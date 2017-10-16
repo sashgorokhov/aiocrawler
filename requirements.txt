@@ -1,4 +1,4 @@
 aiohttp
 aiodns
 parsel
-pydispatch
+PyDispatcher

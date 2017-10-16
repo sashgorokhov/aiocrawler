@@ -112,7 +112,7 @@ class Engine:
                     await self._spider_state[spider]['requests_semaphore'].acquire()
 
                     request = await queue.get()
-                    task = self.loop.create_task(self.process_request(spider, request))
+                    task = self.loop.create_task(self._process_request(spider, request))
                     self.watch_future(spider, task)
                 except:
                     self._spider_state[spider]['requests_semaphore'].release()
@@ -123,14 +123,22 @@ class Engine:
     async def _pipeline_loop(self):
         while not self.is_shutdown:
             for spider in self.spiders.values():
+                if self._spider_state[spider]['items'].empty():
+                    continue
                 await self._pipelines_semaphore.acquire()
                 try:
                     item = await self._spider_state[spider]['items'].get()
-                    task = self.loop.create_task(self.process_item(spider, item))
+                    task = self.loop.create_task(self._process_item(spider, item))
                     self.watch_future(spider, task)
                 except:
                     self._pipelines_semaphore.release()
             await asyncio.sleep(0.1)
+
+    async def _process_item(self, spider, item):
+        try:
+            return await self.process_item(spider, item)
+        finally:
+            self._pipelines_semaphore.release()
 
     async def process_item(self, spider, item):
         try:
@@ -142,8 +150,30 @@ class Engine:
         except:
             self.logger.exception('Error while processing item in spider "%s"')
             self.logger.debug('Failed item: %s', item)
+
+    async def _middleware_process_request(self, spider, request):
+        try:
+            mdlwr_result = await self._spider_state[spider]['downloader_middleware'].process_request(spider,
+                                                                                                     request)
+            if isinstance(mdlwr_result, http.Response):
+                await self.process_response(spider, request, response=mdlwr_result)
+                return
+            elif isinstance(mdlwr_result, http.Request):
+                await self.add_request(spider, mdlwr_result)
+                return
+
+            return True
+        except exceptions.IgnoreRequest:
+            self.logger.info('Ignoring request %s %s', request.method, request.url)
+        except:
+            self.logger.exception('Error executing downloader middleware')
+
+    async def _process_request(self, spider, request):
+        try:
+            return await self.process_request(spider, request)
         finally:
-            self._pipelines_semaphore.release()
+            self._spider_state[spider]['requests_semaphore'].release()
+            self._requests_semaphore.release()
 
     async def process_request(self, spider, request):
         """
@@ -153,34 +183,18 @@ class Engine:
         :param aiocrawler.http.Request request:
         """
         try:
-            try:
-                mdlwr_result = await self._spider_state[spider]['downloader_middleware'].process_request(spider,
-                                                                                                         request)
-                if isinstance(mdlwr_result, http.Response):
-                    await self._process_response(spider, request, response=mdlwr_result)
-                    return
-                elif isinstance(mdlwr_result, http.Request):
-                    await self.add_request(spider, mdlwr_result)
-                    return
-            except exceptions.IgnoreRequest:
-                self.logger.info('Ignoring request %s %s', request.method, request.url)
-                return
-            except:
-                self.logger.exception('Error executing downloader middleware')
+            if not await self._middleware_process_request(spider, request):
                 return
 
             self.logger.debug('Started processing request from spider "%s": %s %s', spider, request.method, request.url)
             session = self.get_session(spider)
             async with session.execute_request(request) as response:
-                await self._process_response(spider, request, response)
+                await self.process_response(spider, request, response)
         except:
             self.logger.exception('Error while processing request from spider "%s": %s %s',
                                   spider, request.method, request.url)
-        finally:
-            self._spider_state[spider]['requests_semaphore'].release()
-            self._requests_semaphore.release()
 
-    async def _process_response(self, spider, request, response):
+    async def _middleware_process_response(self, spider, request, response):
         try:
             mdlwr_result = await self._spider_state[spider]['downloader_middleware'].process_response(spider, request,
                                                                                                       response)
@@ -188,14 +202,15 @@ class Engine:
                 response = mdlwr_result
             elif isinstance(mdlwr_result, http.Request):
                 await self.add_request(spider, mdlwr_result)
-                return
+                return False
+
+            return response
         except exceptions.IgnoreRequest:
             self.logger.info('Ignoring response on %s %s: status %s', request.method, request.url, response.status)
-            return
         except:
             self.logger.exception('Error executing downloader middleware')
 
-        await self.process_response(spider, request, response)
+        return False
 
     async def process_response(self, spider, request, response):
         """
@@ -206,6 +221,12 @@ class Engine:
         :param aiocrawler.http.Request request:
         :param aiocrawler.http.Response response:
         """
+        middleware_result = await self._middleware_process_response(spider, request, response)
+        if isinstance(middleware_result, http.Response):
+            response = middleware_result
+        elif not middleware_result:
+            return
+
         await self.signals.send(signals.response_received, spider=spider, request=request, response=response)
 
         callback = response.callback or spider.process_response
@@ -267,21 +288,22 @@ class Engine:
         """
         spider_name = spider.get_name()
 
-        if isinstance(spider, type):
-            if hasattr(spider, 'from_engine'):
-                spider = spider.from_engine(self)
-            else:
-                spider = spider()
-
         if spider_name not in self.spiders:
+            if isinstance(spider, type):
+                if hasattr(spider, 'from_engine'):
+                    spider = spider.from_engine(self)
+                else:
+                    spider = spider()
+
             self.spiders[spider_name] = spider
+            self._spider_state[spider] = self._init_spider_state(spider)
 
     def _init_spider_state(self, spider):
         """
         Return initial spider state
 
         :param spider:
-        :rtype: dict[aiocrawler.spider.Spider, dict]
+        :rtype: dict
         """
         state = {
             'close_lock': asyncio.Lock(loop=self.loop),
@@ -306,7 +328,6 @@ class Engine:
         self.logger.info('Starting spider "%s"', spider)
 
         try:
-            self._spider_state[spider] = self._init_spider_state(spider)
             await self.signals.send(signals.spider_opened, spider=spider)
             await spider.start()
         except:

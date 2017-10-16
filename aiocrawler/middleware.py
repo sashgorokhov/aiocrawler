@@ -47,7 +47,10 @@ class MiddlewareManager:
         Add a middleware method, if it exists
         """
         if hasattr(middleware, name):
-            self._methods[name].append(getattr(middleware, name))
+            self._add_method(name, getattr(middleware, name))
+
+    def _add_method(self, name, method):
+        self._methods[name].append(method)
 
     def set_middlewares(self, middlewares):
         """
@@ -64,10 +67,12 @@ class MiddlewareManager:
     async def _call_method(self, method, *args, **kwargs):
         if inspect.iscoroutinefunction(method):
             return await method(*args, **kwargs)
+        elif inspect.isgeneratorfunction(method) or inspect.isasyncgenfunction(method):
+            pass
         elif inspect.isfunction(method) or inspect.ismethod(method):
             return method(*args, **kwargs)
-        else:
-            raise TypeError('Unhandled middleware method %s type: %s', method.__name__, type(method))
+
+        raise TypeError('Unhandled middleware method %s type: %s', method.__name__, type(method))
 
     async def call_methods_async(self, name, *args, **kwargs):
         """
