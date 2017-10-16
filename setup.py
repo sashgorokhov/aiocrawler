@@ -1,4 +1,4 @@
-from distutils.core import setup
+from setuptools import setup, find_packages
 
 with open('README.rst', 'r') as f:
     long_description = f.read()
@@ -14,7 +14,7 @@ setup(
     ],
     name='aiocrawler',
     version=VERSION,
-    packages=['aiocrawler'],
+    packages=find_packages(),
     url='https://github.com/sashgorokhov/aiocrawler',
     download_url='https://github.com/sashgorokhov/aiocrawler/archive/master.zip',
     keywords=['asyncio', 'web', 'scraping', 'crawler'],
