@@ -50,10 +50,9 @@ async def test_process_item(pipelines, pipeline_manager: ItemPipelineManager, sp
     methodgen = MiddlewareMethodGenerator(pipelines)
     methodgen.generate('process_item', pipeline_manager)
     for d in methodgen.methodspec:
-        if not d['mock'].return_value:
-            d['mock'].return_value = item
-            d['kwargs']['return_value'] = item
+        if not d['kwargs'].get('return_value'):
+            d['mock'].side_effect = lambda *args, **kwargs: kwargs['item']
 
-    assert await pipeline_manager.process_item(spider, item) == {'title': 'Test item 2'}
+    assert await pipeline_manager.process_item(spider, item)
 
     methodgen.assert_methods(item, check_results=False)

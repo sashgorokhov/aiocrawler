@@ -4,17 +4,22 @@ import logging
 
 from pydispatch import dispatcher
 
+from aiocrawler import engine
+
+__all__ = ['engine_started', 'engine_stopped', 'spider_opened', 'spider_closed', 'spider_error', 'request_received',
+           'response_received', 'item_scraped', 'item_dropped']
+
 logger = logging.getLogger(__name__)
 
 
 class SignalManager:
     def __init__(self, sender=dispatcher.Anonymous, loop=None):
         self.sender = sender
-        self.loop = loop or asyncio.get_event_loop()
+        self.loop = loop or (sender.loop if isinstance(sender, engine.Engine) else asyncio.get_event_loop())
 
     @classmethod
     def from_engine(cls, engine):
-        return cls(engine)
+        return cls(engine, loop=engine.loop)
 
     def connect(self, receiver, signal, **kwargs):
         """
@@ -34,6 +39,10 @@ class SignalManager:
         """
         kwargs.setdefault('sender', self.sender)
         dispatcher.disconnect(receiver, signal, **kwargs)
+
+    def disconnect_all(self, sender, signal):
+        for receiver in self._get_receivers(sender, signal):
+            self.disconnect(receiver, signal, sender=sender)
 
     def _get_receivers(self, sender, signal):
         """

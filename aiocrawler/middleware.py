@@ -47,7 +47,10 @@ class MiddlewareManager:
         Add a middleware method, if it exists
         """
         if hasattr(middleware, name):
-            self._methods[name].append(getattr(middleware, name))
+            self._add_method(name, getattr(middleware, name))
+
+    def _add_method(self, name, method):
+        self._methods[name].append(method)
 
     def set_middlewares(self, middlewares):
         """
