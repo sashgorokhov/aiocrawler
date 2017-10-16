@@ -1,5 +1,6 @@
 from unittest import mock
 
+import aiocrawler
 from aiocrawler.middleware import MiddlewareManager
 
 
@@ -79,3 +80,17 @@ class MockAsyncContextManager:
 def mock_execute_request(response):
     return mock.patch('aiocrawler.http.Session.execute_request', side_effect=lambda *args, **kwargs:
     MockAsyncContextManager(enter_mock=mock.Mock(return_value=response)))
+
+
+class MockSpider(aiocrawler.Spider):
+    def __init__(self, *args, **kwargs):
+        self.start_mock = mock.Mock()
+        self.process_response_mock = mock.Mock()
+
+        super(MockSpider, self).__init__(*args, **kwargs)
+
+    async def start(self):
+        return self.start_mock()
+
+    async def process_response(self, response):
+        return self.process_response_mock(response)

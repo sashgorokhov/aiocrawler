@@ -7,9 +7,8 @@ from yarl import URL
 
 import aiocrawler
 from aiocrawler import signals
-from aiocrawler.http import Response
-from tests.conftest import MockSpider
-from tests.utils import wrap_mock, mock_execute_request
+from aiocrawler.http import Response, Request
+from tests.utils import wrap_mock, mock_execute_request, MockSpider
 
 
 @pytest.fixture()
@@ -66,6 +65,7 @@ async def test_process_request(configured_engine: aiocrawler.Engine, spider):
 
     process_response_mock = mock.Mock(name='process_response_mock')
     response.callback = wrap_mock(process_response_mock)
+
     response_received_mock = mock.Mock(name='response_received_mock')
     response_received_receiver = wrap_mock(response_received_mock)
     configured_engine.signals.connect(response_received_receiver, signals.response_received)
@@ -84,3 +84,49 @@ async def test_process_request(configured_engine: aiocrawler.Engine, spider):
     response_received_mock.assert_called()
     downloader_middleware_mock.assert_called()
     assert downloader_middleware_mock.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_process_response(configured_engine: aiocrawler.Engine, spider):
+    request = Request('http://example.com')
+    response = Response('GET', URL('http://example.com'))
+
+    process_response_mock = mock.Mock(name='process_response_mock')
+    response.callback = wrap_mock(process_response_mock)
+
+    response_received_mock = mock.Mock(name='response_received_mock')
+    response_received_receiver = wrap_mock(response_received_mock)
+    configured_engine.signals.connect(response_received_receiver, signals.response_received)
+
+    downloader_middleware_mock = mock.Mock(name='downloader_middleware_mock', return_value=None)
+    configured_engine._spider_state[spider]['downloader_middleware']._add_method('process_response',
+                                                                                 wrap_mock(downloader_middleware_mock))
+
+    await configured_engine.process_response(spider, request, response)
+
+    process_response_mock.assert_called()
+    response_received_mock.assert_called()
+    downloader_middleware_mock.assert_called()
+
+
+def test_add_spider(engine):
+    spider = aiocrawler.Spider
+    spider.name = 'Test'
+
+    engine.add_spider(spider)
+    spider_instance = engine.spiders[spider.get_name()]
+
+    assert spider_instance.get_name() in engine.spiders
+    assert spider_instance in engine._spider_state
+
+
+@pytest.mark.asyncio
+async def test_start_spider(configured_engine, spider):
+    spider_opened_mock = mock.Mock()
+    spider_opened_receiver = wrap_mock(spider_opened_mock)
+    configured_engine.signals.connect(spider_opened_receiver, signals.spider_opened)
+
+    await configured_engine.start_spider(spider)
+
+    spider_opened_mock.assert_called()
+    spider.start_mock.assert_called()
