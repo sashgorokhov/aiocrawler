@@ -6,12 +6,12 @@ logger = logging.getLogger(__name__)
 
 
 class ItemPipelineManager(middleware.MiddlewareManager):
-    def add_middleware_methods(self, middleware):
-        super(ItemPipelineManager, self).add_middleware_methods(middleware)
-        self.add_middleware_method('process_item', middleware)
+    def add_middleware_methods(self, spider, middleware):
+        super(ItemPipelineManager, self).add_middleware_methods(spider, middleware)
+        self.add_middleware_method('process_item', spider, middleware)
 
     async def process_item(self, spider, item):
-        for method in self._methods['process_item']:
+        for method in self._methods[spider]['process_item']:
             try:
                 result = await self._call_method(method, spider=spider, item=item)
             except exceptions.DropItem:

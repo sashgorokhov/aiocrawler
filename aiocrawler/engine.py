@@ -42,6 +42,8 @@ class Engine:
         self._shutdown_lock = asyncio.Lock(loop=self.loop)
 
         self.signals = signals.SignalManager.from_engine(self)  # type: signals.SignalManager
+        self.pipelines = pipelines.ItemPipelineManager.from_engine(self)
+        self.downloader_middleware = downloadermiddleware.DownloaderMiddleware.from_engine(self)
 
     async def add_request(self, spider, request):
         """
@@ -142,7 +144,7 @@ class Engine:
 
     async def process_item(self, spider, item):
         try:
-            item = await self._spider_state[spider]['pipelines'].process_item(spider=spider, item=item)
+            item = await self.pipelines.process_item(spider=spider, item=item)
             if item is not None:
                 await self.signals.send(signals.item_scraped, spider=spider, item=item)
             else:
@@ -153,8 +155,7 @@ class Engine:
 
     async def _middleware_process_request(self, spider, request):
         try:
-            mdlwr_result = await self._spider_state[spider]['downloader_middleware'].process_request(spider,
-                                                                                                     request)
+            mdlwr_result = await self.downloader_middleware.process_request(request=request, spider=spider)
             if isinstance(mdlwr_result, http.Response):
                 await self.process_response(spider, request, response=mdlwr_result)
                 return
@@ -196,8 +197,8 @@ class Engine:
 
     async def _middleware_process_response(self, spider, request, response):
         try:
-            mdlwr_result = await self._spider_state[spider]['downloader_middleware'].process_response(spider, request,
-                                                                                                      response)
+            mdlwr_result = await self.downloader_middleware.process_response(
+                request=request, response=response, spider=spider)
             if isinstance(mdlwr_result, http.Response):
                 response = mdlwr_result
             elif isinstance(mdlwr_result, http.Request):
@@ -309,13 +310,11 @@ class Engine:
             'close_lock': asyncio.Lock(loop=self.loop),
             'requests_semaphore': asyncio.Semaphore(spider.concurrent_requests_limit, loop=self.loop),
             'requests': asyncio.Queue(loop=self.loop),
-            'items': asyncio.Queue(loop=self.loop),
-            'pipelines': pipelines.ItemPipelineManager.from_engine(self),
-            'downloader_middleware': downloadermiddleware.DownloaderMiddleware.from_engine(self)
+            'items': asyncio.Queue(loop=self.loop)
         }
 
-        state['pipelines'].set_middlewares(spider.get_pipelines())
-        state['downloader_middleware'].set_middlewares(spider.get_downloader_middlewares())
+        self.pipelines.set_middlewares(spider, spider.get_pipelines())
+        self.downloader_middleware.set_middlewares(spider, spider.get_downloader_middlewares())
 
         return state
 
