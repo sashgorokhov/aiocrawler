@@ -45,8 +45,8 @@ class MiddlewareManager:
         self.add_middleware_method('spider_opened', spider, middleware)
         self.add_middleware_method('spider_error', spider, middleware)
         self.add_middleware_method('spider_closed', spider, middleware)
-        self.add_middleware_method('engine_started', spider, middleware)
-        self.add_middleware_method('engine_stopped', spider, middleware)
+        self.add_middleware_method('engine_started', None, middleware)
+        self.add_middleware_method('engine_stopped', None, middleware)
 
     def add_middleware_method(self, name, spider, middleware):
         """
