@@ -2,7 +2,7 @@ import logging
 
 from aiocrawler import exceptions, middleware
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger()
 
 
 class ItemPipelineManager(middleware.MiddlewareManager):
